@@ -1,4 +1,9 @@
 # Binaries for programs and plugins
+.DS_Store
+__pycache__/
+
+logs
+
 *.exe
 *.exe~
 *.dll

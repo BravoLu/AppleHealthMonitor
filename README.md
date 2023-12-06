@@ -1,2 +1,14 @@
 # AppleHealthMonitor
-You can use this project to deploy your own healthy monitor with the assistance of Apple Health.
+
+## requirement
+
+- uWSGI
+
+```shell
+$ uwsgi --http :8000 --wsgi-file app.py --callable app
+```
+
+
+### Promethues
+
+* config path: `/opt/homebrew/etc/prometheus.yml`
