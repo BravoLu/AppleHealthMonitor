@@ -1,64 +1,76 @@
 import json
+import sys
+import logging
 from datetime import datetime
-from flask import Flask, Response
-from flask_cors import CORS
+from flask import request, Flask
+from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client.client.write_api import SYNCHRONOUS
 
-
-from werkzeug.middleware.dispatcher import DispatcherMiddleware
-from prometheus_client import make_wsgi_app, Counter, Gauge, generate_latest, REGISTRY
+DATAPOINTS_CHUNK = 80000
+# Log to a file
+logging.basicConfig(filename='./logs/flask.log', level=logging.DEBUG,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("file-output")
 
 app = Flask(__name__)
-CORS(app)
+app.debug = True
+bucket = "AutoExporter"
+token = "fM2Ti-w-S3BYVFb7nD-JdCXI-vkdJ3xlJvN3OWoyfAuXPq_Glwje3zKTt8pZM1QFZpLSHE9v4CVKwaiKZ4_lSg=="
+org = "BravoStudio"
+url = "http://localhost:8086"
 
-step_counter = Counter("step_count", "step count")
-pv_counter = Counter("PV", "page visit number")
-gauge = Gauge("step_count_2", "step_count metric in step_count", ["timestamp"])
+write_client = InfluxDBClient(url=url, token=token, org=org)
+write_api = write_client.write_api(write_options=SYNCHRONOUS)
 
-@app.route("/incCnt", methods=["GET"])
-def incr_pv():
-    pv_counter.inc()
-    return "ok", 200
+@app.route("/collect", methods=["POST", "GET"])
+def collect():
+    logger.info(f"Request received")
+    healthkit_data = None
+    transformed_data = []
+    try:
+        # load from json file, for debug
+        with open("./example/sample.json", "r") as f:
+            healthkit_data = json.load(f)
+        # healthkit_data = json.loads(request.data)
+    except:
+        return "Invalid JSON Received", 400
+    try:
+        for metric in healthkit_data["data"]["metrics"]:
+            number_fields = []
+            string_fields = []
+            for datapoint in metric["data"]:
+                metric_fields = set(datapoint.keys())  # ("qty", "date")
+                metric_fields.remove("date")  # ("qty")
+                for mfield in metric_fields:  # metric_fields = ["qty"]
+                    if (
+                        type(datapoint[mfield]) == int
+                        or type(datapoint[mfield]) == float
+                    ):
+                        number_fields.append(mfield)
+                    else:
+                        string_fields.append(mfield)
+                ts = datetime.strptime(datapoint["date"], "%Y-%m-%d %H:%M:%S %z")
+                point = Point(metric["name"]).time(ts, WritePrecision.MS)
+                for nfield in string_fields:
+                    point = point.tag(str(nfield), str(datapoint[nfield]))
+                for nfield in number_fields:
+                    point = point.field(str(nfield), float(datapoint[nfield]))
 
-@app.route("/autoexpo", methods=["GET", "POST"])
-def auto_expo():
-    healthkit_data = []
-    res = []
-    with open("sample.json", "r") as f:
-        healthkit_data = json.load(f)
+                transformed_data.append(point)
+                number_fields.clear()
+                string_fields.clear()
 
-    for metric in healthkit_data.get("data", {}).get("metrics", []):
-        #
-        metric_name = metric.get("name")
-        metric_units = metric.get("units")
-        for d in metric.get("data"):
-            date = d["date"]
-            quantity = d["qty"]
-            # step_counter.inc(quantity)
-            timestamp = datetime.strptime(
-                date, "%Y-%m-%d %H:%M:%S %z"
-            ).timestamp()
-            gauge.labels(timestamp=timestamp).set(quantity)
-    return "OK", 200
-
-
-@app.route("/")
-def hello_world():
-    # Increment the Counter metric on each request
-    requests_counter.inc()
-
-    # Set the value of the Gauge metric
-    active_users_gauge.set(43)
-
-    return "Hello, World!"
-
-
-@app.route("/metrics")
-def metrics():
-    # Expose metrics in Prometheus format
-    return Response(generate_latest(REGISTRY), mimetype="text/plain")
-
+        for i in range(0, len(transformed_data), DATAPOINTS_CHUNK):
+            write_api.write(
+                bucket=bucket,
+                org=org,
+                record=transformed_data[i : i + DATAPOINTS_CHUNK],
+            )
+        logger.info(f"DB Metrics Write Complete")
+    except:
+        logger.exception("Caught Exception. See stacktrace for details.")
+        return "Server Error", 500
+    return "Success", 200
 
 if __name__ == "__main__":
-    app.run(debug=True)
-# Add prometheus wsgi middleware to route /metrics requests
-# app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {"/metrics": make_wsgi_app()})
+    app.run(debug=True, port=9000)
