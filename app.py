@@ -73,4 +73,5 @@ def collect():
     return "Success", 200
 
 if __name__ == "__main__":
-    app.run(debug=True, port=9000)
+    # host to set as "0.0.0.0" is neccessary.
+    app.run(host="0.0.0.0", debug=True, port=9000)
